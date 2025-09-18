@@ -12,30 +12,222 @@
         body {
             font-family: 'Inter', sans-serif;
             margin: 0;
+            background-image: linear-gradient(to bottom right, #1f2937, #0d3b66);
         }
     </style>
-    <!-- Firebase SDKs -->
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"></script>
 </head>
 <body>
-    <app-root></app-root>
+    <div class="p-6 min-h-screen flex flex-col items-center justify-center bg-gray-900 bg-cover bg-center" style="background-image: linear-gradient(to bottom right, #1f2937, #0d3b66);">
+        <div class="w-full max-w-4xl bg-white shadow-2xl rounded-2xl p-8">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-center text-gray-900 mb-2">Wochen-Speiseplaner</h1>
+            <p class="text-center text-gray-500 mb-8">Definieren Sie Mahlzeiten und erstellen Sie eine Einkaufsliste.</p>
+            
+            <div class="mb-4 text-center text-sm text-gray-600">
+                Benutzer-ID: <span id="userId" class="font-mono bg-gray-200 px-2 py-1 rounded-md">Lade...</span>
+            </div>
+            
+            <div id="loading" class="text-center text-red-500 font-medium my-4">
+                Lade...
+            </div>
 
-    <!-- Placeholder-Variablen für die Umgebung -->
-    <!-- Ersetzen Sie diese durch Ihre eigenen Firebase-Details für eine echte Bereitstellung -->
-    <script>
-        window.__app_id = "default-app-id";
-        window.__firebase_config = '{}';
-        window.__initial_auth_token = '';
-    </script>
+            <div id="content" class="hidden">
+                <div id="meal-planner-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- Mahlzeiteneingaben werden hier dynamisch eingefügt -->
+                </div>
 
-    <!-- Angular-Komponente -->
+                <div class="flex justify-center mt-8">
+                    <button id="generateListBtn" class="px-6 py-3 bg-indigo-600 text-white rounded-lg shadow-md hover:bg-indigo-700 transition-colors duration-200 font-medium">
+                        Einkaufsliste erstellen
+                    </button>
+                </div>
+
+                <div id="shoppingListContainer" class="mt-8 p-6 bg-gray-50 rounded-lg shadow-inner hidden">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4 text-center">Ihre Einkaufsliste</h2>
+                    <ul id="shoppingList" class="list-disc pl-6 text-gray-700 space-y-2">
+                        <!-- Einkaufsliste wird hier eingefügt -->
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script type="module">
-        import { bootstrapApplication } from 'https://unpkg.com/@angular/platform-browser@17.3.0/fesm2022/platform-browser.mjs';
-        import { App } from './meal-planner.ts';
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        bootstrapApplication(App);
+        setLogLevel('debug');
+
+        const daysOfWeek = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+        const mealsOfDay = [
+            { key: 'dinner', name: 'Abendessen' }
+        ];
+
+        let db;
+        let auth;
+        let userId;
+
+        const initialPlan = daysOfWeek.reduce((plan, day) => {
+            plan[day] = mealsOfDay.reduce((meals, meal) => {
+                meals[meal.key] = { name: '', ingredients: '' };
+                return meals;
+            }, {});
+            return plan;
+        }, {});
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeFirebase();
+        });
+
+        async function initializeFirebase() {
+            try {
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userId').textContent = userId;
+                        subscribeToMealPlan(appId, userId);
+                    } else {
+                        try {
+                            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (error) {
+                            console.error("Fehler bei der Anmeldung:", error);
+                        }
+                    }
+                    document.getElementById('loading').classList.add('hidden');
+                    document.getElementById('content').classList.remove('hidden');
+                });
+            } catch (e) {
+                console.error("Fehler beim Initialisieren von Firebase:", e);
+                document.getElementById('loading').textContent = "Fehler beim Laden der App.";
+            }
+        }
+
+        function subscribeToMealPlan(appId, userId) {
+            const docRef = doc(db, 'artifacts', appId, 'users', userId, 'data', 'meal-plan');
+            
+            onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    renderMealPlan(data);
+                } else {
+                    renderMealPlan(initialPlan);
+                    setDoc(docRef, initialPlan, { merge: true });
+                }
+            }, (error) => {
+                console.error("Fehler beim Abonnieren des Dokuments:", error);
+            });
+        }
+
+        function renderMealPlan(plan) {
+            const container = document.getElementById('meal-planner-grid');
+            container.innerHTML = ''; // Clear previous content
+
+            daysOfWeek.forEach(day => {
+                const dayDiv = document.createElement('div');
+                dayDiv.className = 'mb-4 p-6 bg-gray-50 rounded-lg shadow-inner';
+                let dayHtml = `<h2 class="text-xl font-bold text-gray-800 mb-4">${day}</h2>`;
+
+                mealsOfDay.forEach(meal => {
+                    const mealData = plan[day]?.[meal.key] || { name: '', ingredients: '' };
+                    dayHtml += `
+                        <div class="mb-4">
+                            <h3 class="font-semibold text-gray-700 mb-2">${meal.name}</h3>
+                            <input
+                                type="text"
+                                data-day="${day}"
+                                data-meal-key="${meal.key}"
+                                data-field="name"
+                                value="${mealData.name}"
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 text-sm mb-2"
+                                placeholder="z.B. Pfannkuchen"
+                            >
+                            <textarea
+                                data-day="${day}"
+                                data-meal-key="${meal.key}"
+                                data-field="ingredients"
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 text-sm"
+                                placeholder="Zutaten, Komma-getrennt"
+                            >${mealData.ingredients}</textarea>
+                        </div>
+                    `;
+                });
+
+                dayDiv.innerHTML = dayHtml;
+                container.appendChild(dayDiv);
+            });
+
+            // Re-attach event listeners after re-rendering
+            container.querySelectorAll('input, textarea').forEach(el => {
+                el.addEventListener('input', updatePlan);
+            });
+        }
+        
+        function updatePlan(event) {
+            const target = event.target;
+            const day = target.dataset.day;
+            const mealKey = target.dataset.mealKey;
+            const field = target.dataset.field;
+            const value = target.value;
+
+            if (day && mealKey && field) {
+                const docRef = doc(db, 'artifacts', typeof __app_id !== 'undefined' ? __app_id : 'default-app-id', 'users', userId, 'data', 'meal-plan');
+                setDoc(docRef, {
+                    [day]: {
+                        [mealKey]: {
+                            [field]: value
+                        }
+                    }
+                }, { merge: true }).catch(e => {
+                    console.error("Fehler beim Speichern:", e);
+                });
+            }
+        }
+
+        document.getElementById('generateListBtn').addEventListener('click', () => {
+            const allIngredients = new Set();
+            const inputs = document.querySelectorAll('textarea[data-field="ingredients"]');
+            
+            inputs.forEach(textarea => {
+                const ingredients = textarea.value;
+                if (ingredients) {
+                    ingredients.split(',').forEach(item => {
+                        const trimmedItem = item.trim();
+                        if (trimmedItem) {
+                            allIngredients.add(trimmedItem.charAt(0).toUpperCase() + trimmedItem.slice(1));
+                        }
+                    });
+                }
+            });
+
+            const shoppingList = document.getElementById('shoppingList');
+            const shoppingListContainer = document.getElementById('shoppingListContainer');
+            
+            shoppingList.innerHTML = '';
+            if (allIngredients.size > 0) {
+                const sortedList = Array.from(allIngredients).sort((a, b) => a.localeCompare(b));
+                sortedList.forEach(item => {
+                    const li = document.createElement('li');
+                    li.className = 'bg-white p-2 rounded-md shadow-sm';
+                    li.textContent = item;
+                    shoppingList.appendChild(li);
+                });
+                shoppingListContainer.classList.remove('hidden');
+            } else {
+                shoppingListContainer.classList.add('hidden');
+            }
+        });
     </script>
 </body>
 </html>
